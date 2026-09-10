@@ -9,11 +9,6 @@
 
 #pragma comment(lib, "PowrProf.lib")
 
-
-// ============================================================
-// Информация о батарее
-// ============================================================
-
 BatteryInfo PowerMonitor::GetBatteryInfo() const
 {
     BatteryInfo info;
@@ -25,11 +20,8 @@ BatteryInfo PowerMonitor::GetBatteryInfo() const
         return info;
     }
 
-    info.percent =
-        status.BatteryLifePercent;
-
-    info.connected =
-        status.ACLineStatus == 1;
+    info.percent = status.BatteryLifePercent;
+    info.connected = status.ACLineStatus == 1;
 
     info.charging =
         (status.BatteryFlag &
@@ -42,26 +34,19 @@ BatteryInfo PowerMonitor::GetBatteryInfo() const
 }
 
 
-// ============================================================
-// Возможности системы
-// ============================================================
-
-PowerCapabilities
-PowerMonitor::GetPowerCapabilities() const
+PowerCapabilities PowerMonitor::GetPowerCapabilities() const
 {
     PowerCapabilities result;
 
     SYSTEM_POWER_CAPABILITIES capabilities{};
 
-    if (!GetPwrCapabilities(
-        &capabilities))
+    if (!GetPwrCapabilities(&capabilities))
     {
         return result;
     }
 
-    // В твоём SDK нет SystemS0LowPowerIdle,
-    // поэтому проверяем стандартные состояния S1-S3.
     result.sleepSupported =
+        capabilities.AoAc ||
         capabilities.SystemS1 ||
         capabilities.SystemS2 ||
         capabilities.SystemS3;
@@ -76,24 +61,19 @@ PowerMonitor::GetPowerCapabilities() const
 }
 
 
-// ============================================================
-// Получение названия схемы питания
-// ============================================================
-
 static std::wstring GetSchemeName(
     const GUID& guid)
 {
     DWORD size = 0;
 
-    DWORD result =
-        PowerReadFriendlyName(
-            nullptr,
-            &guid,
-            nullptr,
-            nullptr,
-            nullptr,
-            &size
-        );
+    DWORD result = PowerReadFriendlyName(
+        nullptr,
+        &guid,
+        nullptr,
+        nullptr,
+        nullptr,
+        &size
+    );
 
     if (result != ERROR_SUCCESS &&
         result != ERROR_MORE_DATA)
@@ -108,15 +88,14 @@ static std::wstring GetSchemeName(
 
     std::vector<UCHAR> buffer(size);
 
-    result =
-        PowerReadFriendlyName(
-            nullptr,
-            &guid,
-            nullptr,
-            nullptr,
-            buffer.data(),
-            &size
-        );
+    result = PowerReadFriendlyName(
+        nullptr,
+        &guid,
+        nullptr,
+        nullptr,
+        buffer.data(),
+        &size
+    );
 
     if (result != ERROR_SUCCESS)
     {
@@ -131,10 +110,6 @@ static std::wstring GetSchemeName(
 }
 
 
-// ============================================================
-// Получение всех схем питания
-// ============================================================
-
 std::vector<PowerSchemeInfo>
 PowerMonitor::GetPowerSchemes() const
 {
@@ -144,21 +119,19 @@ PowerMonitor::GetPowerSchemes() const
     {
         GUID guid{};
 
-        DWORD size =
-            sizeof(GUID);
+        DWORD size = sizeof(GUID);
 
-        DWORD result =
-            PowerEnumerate(
-                nullptr,
-                nullptr,
-                nullptr,
-                ACCESS_SCHEME,
-                index,
-                reinterpret_cast<UCHAR*>(
-                    &guid
-                    ),
-                &size
-            );
+        DWORD result = PowerEnumerate(
+            nullptr,
+            nullptr,
+            nullptr,
+            ACCESS_SCHEME,
+            index,
+            reinterpret_cast<UCHAR*>(
+                &guid
+                ),
+            &size
+        );
 
         if (result != ERROR_SUCCESS)
         {
@@ -168,33 +141,24 @@ PowerMonitor::GetPowerSchemes() const
         PowerSchemeInfo scheme;
 
         scheme.guid = guid;
+        scheme.name = GetSchemeName(guid);
 
-        scheme.name =
-            GetSchemeName(guid);
-
-        schemes.push_back(
-            scheme
-        );
+        schemes.push_back(scheme);
     }
 
     return schemes;
 }
 
 
-// ============================================================
-// Получение активной схемы питания
-// ============================================================
-
 std::wstring
 PowerMonitor::GetActivePowerSchemeName() const
 {
     GUID* activeGuid = nullptr;
 
-    DWORD result =
-        PowerGetActiveScheme(
-            nullptr,
-            &activeGuid
-        );
+    DWORD result = PowerGetActiveScheme(
+        nullptr,
+        &activeGuid
+    );
 
     if (result != ERROR_SUCCESS ||
         activeGuid == nullptr)
@@ -203,9 +167,7 @@ PowerMonitor::GetActivePowerSchemeName() const
     }
 
     std::wstring name =
-        GetSchemeName(
-            *activeGuid
-        );
+        GetSchemeName(*activeGuid);
 
     LocalFree(activeGuid);
 
@@ -213,26 +175,17 @@ PowerMonitor::GetActivePowerSchemeName() const
 }
 
 
-// ============================================================
-// Переключение схемы питания
-// ============================================================
-
 bool PowerMonitor::SetActivePowerScheme(
     const GUID& guid) const
 {
-    DWORD result =
-        PowerSetActiveScheme(
-            nullptr,
-            &guid
-        );
+    DWORD result = PowerSetActiveScheme(
+        nullptr,
+        &guid
+    );
 
     return result == ERROR_SUCCESS;
 }
 
-
-// ============================================================
-// Включение привилегии SE_SHUTDOWN_NAME
-// ============================================================
 
 bool PowerMonitor::EnableShutdownPrivilege() const
 {
@@ -277,8 +230,7 @@ bool PowerMonitor::EnableShutdownPrivilege() const
         return false;
     }
 
-    DWORD error =
-        GetLastError();
+    DWORD error = GetLastError();
 
     CloseHandle(token);
 
@@ -292,49 +244,14 @@ bool PowerMonitor::EnableShutdownPrivilege() const
 }
 
 
-// ============================================================
-// Спящий режим
-// ============================================================
-
 bool PowerMonitor::Sleep() const
 {
-    SetLastError(ERROR_SUCCESS);
-
-    /*
-        На твоём ноутбуке используется Modern Standby S0.
-        Классический S3 недоступен.
-
-        Поэтому здесь не используется:
-
-            SetSuspendState(FALSE, ...)
-
-        Вместо этого отправляется системная команда
-        управления питанием монитора.
-    */
-
-    LRESULT result =
-        SendMessageW(
-            HWND_BROADCAST,
-            WM_SYSCOMMAND,
-            SC_MONITORPOWER,
-            2
-        );
-
-    if (result != 0)
+    if (!GetPowerCapabilities().sleepSupported)
     {
-        return true;
+        SetLastError(ERROR_NOT_SUPPORTED);
+        return false;
     }
 
-    return true;
-}
-
-
-// ============================================================
-// Гибернация
-// ============================================================
-
-bool PowerMonitor::Hibernate() const
-{
     if (!EnableShutdownPrivilege())
     {
         return false;
@@ -342,26 +259,41 @@ bool PowerMonitor::Hibernate() const
 
     SetLastError(ERROR_SUCCESS);
 
-    BOOL result =
-        SetSuspendState(
-            TRUE,
-            FALSE,
-            FALSE
-        );
-
-    return result == TRUE;
+    return SetSuspendState(
+        FALSE,
+        FALSE,
+        FALSE
+    ) == TRUE;
 }
 
 
-// ============================================================
-// Получение текста последней ошибки
-// ============================================================
+bool PowerMonitor::Hibernate() const
+{
+    if (!GetPowerCapabilities().hibernateSupported)
+    {
+        SetLastError(ERROR_NOT_SUPPORTED);
+        return false;
+    }
+
+    if (!EnableShutdownPrivilege())
+    {
+        return false;
+    }
+
+    SetLastError(ERROR_SUCCESS);
+
+    return SetSuspendState(
+        TRUE,
+        FALSE,
+        FALSE
+    ) == TRUE;
+}
+
 
 std::wstring
 PowerMonitor::GetLastErrorText() const
 {
-    DWORD error =
-        GetLastError();
+    DWORD error = GetLastError();
 
     if (error == ERROR_SUCCESS)
     {
@@ -370,20 +302,19 @@ PowerMonitor::GetLastErrorText() const
 
     LPWSTR buffer = nullptr;
 
-    DWORD size =
-        FormatMessageW(
-            FORMAT_MESSAGE_ALLOCATE_BUFFER |
-            FORMAT_MESSAGE_FROM_SYSTEM |
-            FORMAT_MESSAGE_IGNORE_INSERTS,
-            nullptr,
-            error,
-            0,
-            reinterpret_cast<LPWSTR>(
-                &buffer
-                ),
-            0,
-            nullptr
-        );
+    DWORD size = FormatMessageW(
+        FORMAT_MESSAGE_ALLOCATE_BUFFER |
+        FORMAT_MESSAGE_FROM_SYSTEM |
+        FORMAT_MESSAGE_IGNORE_INSERTS,
+        nullptr,
+        error,
+        0,
+        reinterpret_cast<LPWSTR>(
+            &buffer
+            ),
+        0,
+        nullptr
+    );
 
     std::wstring result;
 
@@ -399,17 +330,12 @@ PowerMonitor::GetLastErrorText() const
     }
     else
     {
-        result =
-            L"Неизвестная ошибка";
+        result = L"Неизвестная ошибка";
     }
 
     return result;
 }
 
-
-// ============================================================
-// Форматирование оставшегося времени
-// ============================================================
 
 std::wstring
 PowerMonitor::FormatTime(
@@ -420,14 +346,9 @@ PowerMonitor::FormatTime(
         return L"Недоступно";
     }
 
-    DWORD hours =
-        seconds / 3600;
-
-    DWORD minutes =
-        (seconds % 3600) / 60;
-
-    DWORD secs =
-        seconds % 60;
+    DWORD hours = seconds / 3600;
+    DWORD minutes = (seconds % 3600) / 60;
+    DWORD secs = seconds % 60;
 
     std::wstringstream stream;
 

@@ -12,11 +12,6 @@
 
 using namespace Gdiplus;
 
-
-// ============================================================
-// Глобальные переменные
-// ============================================================
-
 PowerMonitor g_power;
 
 ULONG_PTR g_gdiplusToken = 0;
@@ -31,20 +26,51 @@ enum JournalFilter
     FILTER_SLEEP
 };
 
-JournalFilter g_filter =
-FILTER_ALL;
+JournalFilter g_filter = FILTER_ALL;
 
-std::vector<std::wstring>
-g_journal;
+std::vector<std::wstring> g_journal;
 
 BatteryInfo g_lastBattery;
 
 bool g_firstBatteryCheck = true;
 
 
-// ============================================================
-// UTF-16 -> UTF-8
-// ============================================================
+std::wstring GetJournalPath()
+{
+    wchar_t path[MAX_PATH]{};
+
+    DWORD length = GetModuleFileNameW(
+        nullptr,
+        path,
+        MAX_PATH
+    );
+
+    if (length == 0 ||
+        length >= MAX_PATH)
+    {
+        return L"power_log.txt";
+    }
+
+    std::wstring directory(
+        path,
+        length
+    );
+
+    size_t separator = directory.find_last_of(
+        L"\\/"
+    );
+
+    if (separator == std::wstring::npos)
+    {
+        return L"power_log.txt";
+    }
+
+    return directory.substr(
+        0,
+        separator + 1
+    ) + L"power_log.txt";
+}
+
 
 std::string WideToUtf8(
     const std::wstring& text)
@@ -52,60 +78,84 @@ std::string WideToUtf8(
     if (text.empty())
         return std::string();
 
-    int requiredSize =
-        WideCharToMultiByte(
-            CP_UTF8,
-            0,
-            text.c_str(),
-            static_cast<int>(
-                text.size()
-                ),
-            nullptr,
-            0,
-            nullptr,
-            nullptr
-        );
+    int requiredSize = WideCharToMultiByte(
+        CP_UTF8,
+        0,
+        text.c_str(),
+        static_cast<int>(text.size()),
+        nullptr,
+        0,
+        nullptr,
+        nullptr
+    );
 
     if (requiredSize <= 0)
         return std::string();
 
     std::string result(
-        static_cast<size_t>(
-            requiredSize
-            ),
+        static_cast<size_t>(requiredSize),
         '\0'
     );
 
-    int converted =
-        WideCharToMultiByte(
-            CP_UTF8,
-            0,
-            text.c_str(),
-            static_cast<int>(
-                text.size()
-                ),
-            &result[0],
-            requiredSize,
-            nullptr,
-            nullptr
-        );
+    int converted = WideCharToMultiByte(
+        CP_UTF8,
+        0,
+        text.c_str(),
+        static_cast<int>(text.size()),
+        &result[0],
+        requiredSize,
+        nullptr,
+        nullptr
+    );
 
     if (converted <= 0)
         return std::string();
 
     result.resize(
-        static_cast<size_t>(
-            converted
-            )
+        static_cast<size_t>(converted)
     );
 
     return result;
 }
 
 
-// ============================================================
-// Время
-// ============================================================
+std::wstring Utf8ToWide(
+    const std::string& text)
+{
+    if (text.empty())
+        return std::wstring();
+
+    int requiredSize = MultiByteToWideChar(
+        CP_UTF8,
+        MB_ERR_INVALID_CHARS,
+        text.data(),
+        static_cast<int>(text.size()),
+        nullptr,
+        0
+    );
+
+    if (requiredSize <= 0)
+        return std::wstring();
+
+    std::wstring result(
+        static_cast<size_t>(requiredSize),
+        L'\0'
+    );
+
+    if (MultiByteToWideChar(
+        CP_UTF8,
+        MB_ERR_INVALID_CHARS,
+        text.data(),
+        static_cast<int>(text.size()),
+        &result[0],
+        requiredSize) <= 0)
+    {
+        return std::wstring();
+    }
+
+    return result;
+}
+
 
 std::wstring CurrentTime()
 {
@@ -127,10 +177,6 @@ std::wstring CurrentTime()
 }
 
 
-// ============================================================
-// Журнал
-// ============================================================
-
 void AddJournal(
     const std::wstring& text)
 {
@@ -150,62 +196,88 @@ void AddJournal(
     }
 
     std::ofstream file(
-        "power_log.txt",
-        std::ios::app
+        GetJournalPath(),
+        std::ios::app |
+        std::ios::binary
     );
 
     if (file)
     {
-        file
-            << WideToUtf8(line)
-            << "\n";
+        file << WideToUtf8(line) << "\n";
     }
 }
 
 
-// ============================================================
-// Фильтр журнала
-// ============================================================
+void LoadJournal()
+{
+    std::ifstream file(
+        GetJournalPath(),
+        std::ios::binary
+    );
+
+    std::string line;
+
+    while (std::getline(file, line))
+    {
+        if (!line.empty() &&
+            line.back() == '\r')
+        {
+            line.pop_back();
+        }
+
+        std::wstring wideLine =
+            Utf8ToWide(line);
+
+        if (!wideLine.empty())
+        {
+            g_journal.push_back(wideLine);
+        }
+    }
+
+    if (g_journal.size() > 500)
+    {
+        g_journal.erase(
+            g_journal.begin(),
+            g_journal.end() - 500
+        );
+    }
+}
+
 
 bool JournalMatches(
     const std::wstring& line)
 {
-    if (g_filter ==
-        FILTER_ALL)
+    if (g_filter == FILTER_ALL)
     {
         return true;
     }
 
-    if (g_filter ==
-        FILTER_CHARGER)
+    if (g_filter == FILTER_CHARGER)
     {
-        return
-            line.find(
-                L"Зарядное устройство"
-            ) !=
-            std::wstring::npos;
+        return line.find(
+            L"Зарядное устройство"
+        ) != std::wstring::npos;
     }
 
-    if (g_filter ==
-        FILTER_CHARGE)
+    if (g_filter == FILTER_CHARGE)
     {
-        return
-            line.find(
-                L"Уровень заряда"
-            ) !=
-            std::wstring::npos;
+        return line.find(
+            L"Уровень заряда"
+        ) != std::wstring::npos;
     }
 
-    if (g_filter ==
-        FILTER_SLEEP)
+    if (g_filter == FILTER_SLEEP)
     {
         return
             line.find(L"спящий") !=
             std::wstring::npos ||
+
             line.find(L"гибернац") !=
             std::wstring::npos ||
+
             line.find(L"Пробуждение") !=
             std::wstring::npos ||
+
             line.find(L"Возобновление") !=
             std::wstring::npos;
     }
@@ -214,22 +286,17 @@ bool JournalMatches(
 }
 
 
-// ============================================================
-// Автозапуск
-// ============================================================
-
 bool IsAutostartEnabled()
 {
     HKEY key = nullptr;
 
-    LONG result =
-        RegOpenKeyExW(
-            HKEY_CURRENT_USER,
-            L"Software\\Microsoft\\Windows\\CurrentVersion\\Run",
-            0,
-            KEY_READ,
-            &key
-        );
+    LONG result = RegOpenKeyExW(
+        HKEY_CURRENT_USER,
+        L"Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+        0,
+        KEY_READ,
+        &key
+    );
 
     if (result != ERROR_SUCCESS)
         return false;
@@ -237,15 +304,14 @@ bool IsAutostartEnabled()
     DWORD type = 0;
     DWORD size = 0;
 
-    result =
-        RegQueryValueExW(
-            key,
-            L"IIUVM_PowerWidget",
-            nullptr,
-            &type,
-            nullptr,
-            &size
-        );
+    result = RegQueryValueExW(
+        key,
+        L"IIUVM_PowerWidget",
+        nullptr,
+        &type,
+        nullptr,
+        &size
+    );
 
     RegCloseKey(key);
 
@@ -258,29 +324,26 @@ bool SetAutostart(
 {
     HKEY key = nullptr;
 
-    LONG result =
-        RegOpenKeyExW(
-            HKEY_CURRENT_USER,
-            L"Software\\Microsoft\\Windows\\CurrentVersion\\Run",
-            0,
-            KEY_SET_VALUE,
-            &key
-        );
+    LONG result = RegOpenKeyExW(
+        HKEY_CURRENT_USER,
+        L"Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+        0,
+        KEY_SET_VALUE,
+        &key
+    );
 
     if (result != ERROR_SUCCESS)
         return false;
-
 
     if (enabled)
     {
         wchar_t path[MAX_PATH]{};
 
-        DWORD length =
-            GetModuleFileNameW(
-                nullptr,
-                path,
-                MAX_PATH
-            );
+        DWORD length = GetModuleFileNameW(
+            nullptr,
+            path,
+            MAX_PATH
+        );
 
         if (length == 0 ||
             length >= MAX_PATH)
@@ -294,73 +357,68 @@ bool SetAutostart(
             std::wstring(path) +
             L"\"";
 
-
-        result =
-            RegSetValueExW(
-                key,
-                L"IIUVM_PowerWidget",
-                0,
-                REG_SZ,
-                reinterpret_cast<
-                const BYTE*
-                >(command.c_str()),
-                static_cast<DWORD>(
-                    (command.size() + 1) *
-                    sizeof(wchar_t)
-                    )
-            );
+        result = RegSetValueExW(
+            key,
+            L"IIUVM_PowerWidget",
+            0,
+            REG_SZ,
+            reinterpret_cast<const BYTE*>(
+                command.c_str()
+                ),
+            static_cast<DWORD>(
+                (command.size() + 1) *
+                sizeof(wchar_t)
+                )
+        );
     }
     else
     {
-        result =
-            RegDeleteValueW(
-                key,
-                L"IIUVM_PowerWidget"
-            );
+        result = RegDeleteValueW(
+            key,
+            L"IIUVM_PowerWidget"
+        );
 
-        if (result ==
-            ERROR_FILE_NOT_FOUND)
+        if (result == ERROR_FILE_NOT_FOUND)
         {
-            result =
-                ERROR_SUCCESS;
+            result = ERROR_SUCCESS;
         }
     }
 
-
     RegCloseKey(key);
 
-    return result ==
-        ERROR_SUCCESS;
+    return result == ERROR_SUCCESS;
 }
 
-
-// ============================================================
-// Цвет батареи
-// ============================================================
 
 Color BatteryColor(
     BYTE percent)
 {
     if (percent == 255)
+    {
         return Color(
             180,
             180,
             180
         );
+    }
 
     if (percent <= 20)
+    {
         return Color(
             230,
             70,
             70
         );
+    }
 
     if (percent <= 50)
+    {
         return Color(
             240,
             190,
             50
         );
+    }
 
     return Color(
         70,
@@ -369,10 +427,6 @@ Color BatteryColor(
     );
 }
 
-
-// ============================================================
-// Текст GDI+
-// ============================================================
 
 void DrawTextGdi(
     Graphics& graphics,
@@ -417,10 +471,6 @@ void DrawTextGdi(
 }
 
 
-// ============================================================
-// Главная страница
-// ============================================================
-
 void DrawMainPage(
     Graphics& graphics,
     int width,
@@ -437,15 +487,12 @@ void DrawMainPage(
     BatteryInfo battery =
         g_power.GetBatteryInfo();
 
-
     DrawTextGdi(
         graphics,
         L"Контроль питания",
         20,
         14,
-        static_cast<float>(
-            width - 40
-            ),
+        static_cast<float>(width - 40),
         30,
         18,
         Color(
@@ -455,13 +502,9 @@ void DrawMainPage(
         )
     );
 
-
-    // Индикатор
-
     float cx = 72.0f;
     float cy = 92.0f;
     float radius = 43.0f;
-
 
     Pen backgroundPen(
         Color(
@@ -472,7 +515,6 @@ void DrawMainPage(
         8
     );
 
-
     graphics.DrawArc(
         &backgroundPen,
         cx - radius,
@@ -482,7 +524,6 @@ void DrawMainPage(
         0,
         360
     );
-
 
     if (battery.percent != 255)
     {
@@ -511,7 +552,6 @@ void DrawMainPage(
         );
     }
 
-
     std::wstring percentText;
 
     if (battery.percent == 255)
@@ -526,7 +566,6 @@ void DrawMainPage(
             ) +
             L"%";
     }
-
 
     DrawTextGdi(
         graphics,
@@ -543,30 +582,23 @@ void DrawMainPage(
         )
     );
 
-
-    // Питание
-
     std::wstring powerText;
 
     if (battery.connected)
     {
         if (battery.charging)
         {
-            powerText =
-                L"Заряжается";
+            powerText = L"Заряжается";
         }
         else
         {
-            powerText =
-                L"От сети";
+            powerText = L"От сети";
         }
     }
     else
     {
-        powerText =
-            L"От батареи";
+        powerText = L"От батареи";
     }
-
 
     DrawTextGdi(
         graphics,
@@ -583,7 +615,6 @@ void DrawMainPage(
         )
     );
 
-
     DrawTextGdi(
         graphics,
         L"Осталось:",
@@ -598,7 +629,6 @@ void DrawMainPage(
             135
         )
     );
-
 
     DrawTextGdi(
         graphics,
@@ -617,9 +647,6 @@ void DrawMainPage(
         )
     );
 
-
-    // Схема
-
     DrawTextGdi(
         graphics,
         L"Режим:",
@@ -634,7 +661,6 @@ void DrawMainPage(
             135
         )
     );
-
 
     DrawTextGdi(
         graphics,
@@ -651,14 +677,11 @@ void DrawMainPage(
         )
     );
 
-
     DrawTextGdi(
         graphics,
         L"ПКМ — меню",
         20,
-        static_cast<float>(
-            height - 30
-            ),
+        static_cast<float>(height - 30),
         150,
         20,
         10,
@@ -670,10 +693,6 @@ void DrawMainPage(
     );
 }
 
-
-// ============================================================
-// Журнал
-// ============================================================
 
 void DrawJournalPage(
     Graphics& graphics,
@@ -687,7 +706,6 @@ void DrawJournalPage(
             250
         )
     );
-
 
     DrawTextGdi(
         graphics,
@@ -704,7 +722,6 @@ void DrawJournalPage(
         )
     );
 
-
     DrawTextGdi(
         graphics,
         L"[1] Все",
@@ -719,7 +736,6 @@ void DrawJournalPage(
             65
         )
     );
-
 
     DrawTextGdi(
         graphics,
@@ -736,7 +752,6 @@ void DrawJournalPage(
         )
     );
 
-
     DrawTextGdi(
         graphics,
         L"[3] Уровень",
@@ -751,7 +766,6 @@ void DrawJournalPage(
             65
         )
     );
-
 
     DrawTextGdi(
         graphics,
@@ -768,14 +782,11 @@ void DrawJournalPage(
         )
     );
 
-
     DrawTextGdi(
         graphics,
         L"[Esc] Назад",
         15,
-        static_cast<float>(
-            height - 24
-            ),
+        static_cast<float>(height - 24),
         100,
         20,
         9,
@@ -786,9 +797,7 @@ void DrawJournalPage(
         )
     );
 
-
     float y = 70.0f;
-
 
     for (
         auto it = g_journal.rbegin();
@@ -798,15 +807,12 @@ void DrawJournalPage(
         if (!JournalMatches(*it))
             continue;
 
-
         DrawTextGdi(
             graphics,
             *it,
             15,
             y,
-            static_cast<float>(
-                width - 30
-                ),
+            static_cast<float>(width - 30),
             20,
             9,
             Color(
@@ -816,19 +822,13 @@ void DrawJournalPage(
             )
         );
 
-
         y += 19.0f;
-
 
         if (y > height - 40)
             break;
     }
 }
 
-
-// ============================================================
-// Отрисовка
-// ============================================================
 
 void PaintWindow(
     HWND hwnd)
@@ -848,25 +848,18 @@ void PaintWindow(
         rc.bottom -
         rc.top;
 
-
     if (width <= 0 ||
         height <= 0)
     {
         return;
     }
 
-
-    HDC hdc =
-        GetDC(hwnd);
+    HDC hdc = GetDC(hwnd);
 
     if (!hdc)
         return;
 
-
-    HDC memDC =
-        CreateCompatibleDC(
-            hdc
-        );
+    HDC memDC = CreateCompatibleDC(hdc);
 
     if (!memDC)
     {
@@ -878,14 +871,11 @@ void PaintWindow(
         return;
     }
 
-
-    HBITMAP bitmap =
-        CreateCompatibleBitmap(
-            hdc,
-            width,
-            height
-        );
-
+    HBITMAP bitmap = CreateCompatibleBitmap(
+        hdc,
+        width,
+        height
+    );
 
     if (!bitmap)
     {
@@ -899,7 +889,6 @@ void PaintWindow(
         return;
     }
 
-
     HBITMAP oldBitmap =
         static_cast<HBITMAP>(
             SelectObject(
@@ -908,13 +897,11 @@ void PaintWindow(
             )
             );
 
-
     Graphics graphics(memDC);
 
     graphics.SetSmoothingMode(
         SmoothingModeAntiAlias
     );
-
 
     if (g_showJournal)
     {
@@ -933,7 +920,6 @@ void PaintWindow(
         );
     }
 
-
     BitBlt(
         hdc,
         0,
@@ -946,14 +932,12 @@ void PaintWindow(
         SRCCOPY
     );
 
-
     SelectObject(
         memDC,
         oldBitmap
     );
 
     DeleteObject(bitmap);
-
     DeleteDC(memDC);
 
     ReleaseDC(
@@ -963,21 +947,15 @@ void PaintWindow(
 }
 
 
-// ============================================================
-// Контекстное меню
-// ============================================================
-
 void ShowContextMenu(
     HWND hwnd,
     int x,
     int y)
 {
-    HMENU menu =
-        CreatePopupMenu();
+    HMENU menu = CreatePopupMenu();
 
     if (!menu)
         return;
-
 
     AppendMenuW(
         menu,
@@ -986,14 +964,12 @@ void ShowContextMenu(
         L"Спящий режим"
     );
 
-
     AppendMenuW(
         menu,
         MF_STRING,
         1002,
         L"Гибернация"
     );
-
 
     AppendMenuW(
         menu,
@@ -1002,7 +978,6 @@ void ShowContextMenu(
         nullptr
     );
 
-
     AppendMenuW(
         menu,
         MF_STRING,
@@ -1010,12 +985,7 @@ void ShowContextMenu(
         L"Показать полный журнал"
     );
 
-
-    // Фильтры
-
-    HMENU filterMenu =
-        CreatePopupMenu();
-
+    HMENU filterMenu = CreatePopupMenu();
 
     if (filterMenu)
     {
@@ -1047,7 +1017,6 @@ void ShowContextMenu(
             L"Только переходы сна"
         );
 
-
         AppendMenuW(
             menu,
             MF_POPUP,
@@ -1058,16 +1027,10 @@ void ShowContextMenu(
         );
     }
 
-
-    // Схемы
-
-    HMENU schemeMenu =
-        CreatePopupMenu();
-
+    HMENU schemeMenu = CreatePopupMenu();
 
     auto schemes =
         g_power.GetPowerSchemes();
-
 
     if (schemeMenu)
     {
@@ -1079,14 +1042,10 @@ void ShowContextMenu(
             AppendMenuW(
                 schemeMenu,
                 MF_STRING,
-                1100 +
-                static_cast<UINT>(
-                    i
-                    ),
+                1100 + static_cast<UINT>(i),
                 schemes[i].name.c_str()
             );
         }
-
 
         AppendMenuW(
             menu,
@@ -1098,33 +1057,25 @@ void ShowContextMenu(
         );
     }
 
-
     AppendMenuW(
         menu,
         MF_SEPARATOR,
         0,
         nullptr
     );
-
-
-    // Автозапуск
 
     bool autostart =
         IsAutostartEnabled();
 
-
     AppendMenuW(
         menu,
         MF_STRING |
-        (
-            autostart
+        (autostart
             ? MF_CHECKED
-            : 0
-            ),
+            : 0),
         1200,
         L"Автозапуск Windows"
     );
-
 
     AppendMenuW(
         menu,
@@ -1132,7 +1083,6 @@ void ShowContextMenu(
         0,
         nullptr
     );
-
 
     AppendMenuW(
         menu,
@@ -1141,49 +1091,51 @@ void ShowContextMenu(
         L"Выход"
     );
 
-
     SetForegroundWindow(hwnd);
 
-
-    UINT command =
-        TrackPopupMenu(
-            menu,
-            TPM_RETURNCMD |
-            TPM_NONOTIFY,
-            x,
-            y,
-            0,
-            hwnd,
-            nullptr
-        );
-
-
-    // Сон
+    UINT command = TrackPopupMenu(
+        menu,
+        TPM_RETURNCMD |
+        TPM_NONOTIFY,
+        x,
+        y,
+        0,
+        hwnd,
+        nullptr
+    );
 
     if (command == 1001)
     {
-        AddJournal(
-            L"Запрошен переход в спящий режим"
-        );
+        if (!g_power.Sleep())
+        {
+            std::wstring error =
+                g_power.GetLastErrorText();
 
-        g_power.Sleep();
+            AddJournal(
+                L"Не удалось перейти в спящий режим: " +
+                error
+            );
 
-        // Не показываем никаких окон после команды сна.
+            MessageBoxW(
+                hwnd,
+                error.c_str(),
+                L"Ошибка спящего режима",
+                MB_OK |
+                MB_ICONERROR
+            );
+        }
     }
-
-
-    // Гибернация
-
     else if (command == 1002)
     {
-        AddJournal(
-            L"Запрошен переход в гибернацию"
-        );
-
         if (!g_power.Hibernate())
         {
             std::wstring error =
                 g_power.GetLastErrorText();
+
+            AddJournal(
+                L"Не удалось перейти в гибернацию: " +
+                error
+            );
 
             MessageBoxW(
                 hwnd,
@@ -1194,10 +1146,6 @@ void ShowContextMenu(
             );
         }
     }
-
-
-    // Журнал
-
     else if (command == 1003)
     {
         g_showJournal = true;
@@ -1208,15 +1156,9 @@ void ShowContextMenu(
             FALSE
         );
     }
-
-
-    // Фильтры
-
     else if (command == 1010)
     {
-        g_filter =
-            FILTER_ALL;
-
+        g_filter = FILTER_ALL;
         g_showJournal = true;
 
         InvalidateRect(
@@ -1225,13 +1167,9 @@ void ShowContextMenu(
             FALSE
         );
     }
-
-
     else if (command == 1011)
     {
-        g_filter =
-            FILTER_CHARGER;
-
+        g_filter = FILTER_CHARGER;
         g_showJournal = true;
 
         InvalidateRect(
@@ -1240,13 +1178,9 @@ void ShowContextMenu(
             FALSE
         );
     }
-
-
     else if (command == 1012)
     {
-        g_filter =
-            FILTER_CHARGE;
-
+        g_filter = FILTER_CHARGE;
         g_showJournal = true;
 
         InvalidateRect(
@@ -1255,13 +1189,9 @@ void ShowContextMenu(
             FALSE
         );
     }
-
-
     else if (command == 1013)
     {
-        g_filter =
-            FILTER_SLEEP;
-
+        g_filter = FILTER_SLEEP;
         g_showJournal = true;
 
         InvalidateRect(
@@ -1270,24 +1200,16 @@ void ShowContextMenu(
             FALSE
         );
     }
-
-
-    // Схема питания
-
     else if (
         command >= 1100 &&
         command <
-        1100 +
-        schemes.size())
+        1100 + schemes.size())
     {
         size_t index =
             command - 1100;
 
-
-        if (
-            g_power.SetActivePowerScheme(
-                schemes[index].guid
-            ))
+        if (g_power.SetActivePowerScheme(
+            schemes[index].guid))
         {
             AddJournal(
                 L"Изменена схема питания: " +
@@ -1295,25 +1217,18 @@ void ShowContextMenu(
             );
         }
 
-
         InvalidateRect(
             hwnd,
             nullptr,
             FALSE
         );
     }
-
-
-    // Автозапуск
-
     else if (command == 1200)
     {
         bool current =
             IsAutostartEnabled();
 
-
-        if (!SetAutostart(
-            !current))
+        if (!SetAutostart(!current))
         {
             MessageBoxW(
                 hwnd,
@@ -1324,30 +1239,20 @@ void ShowContextMenu(
             );
         }
 
-
         InvalidateRect(
             hwnd,
             nullptr,
             FALSE
         );
     }
-
-
-    // Выход
-
     else if (command == 1201)
     {
         DestroyWindow(hwnd);
     }
 
-
     DestroyMenu(menu);
 }
 
-
-// ============================================================
-// Проверка батареи
-// ============================================================
 
 void CheckBatteryChanges(
     HWND hwnd)
@@ -1355,21 +1260,14 @@ void CheckBatteryChanges(
     BatteryInfo current =
         g_power.GetBatteryInfo();
 
-
     if (g_firstBatteryCheck)
     {
-        g_lastBattery =
-            current;
-
-        g_firstBatteryCheck =
-            false;
-
+        g_lastBattery = current;
+        g_firstBatteryCheck = false;
         return;
     }
 
-
-    if (
-        current.connected !=
+    if (current.connected !=
         g_lastBattery.connected)
     {
         if (current.connected)
@@ -1386,14 +1284,10 @@ void CheckBatteryChanges(
         }
     }
 
-
-    if (
-        current.percent !=
+    if (current.percent !=
         g_lastBattery.percent)
     {
-        if (
-            current.percent !=
-            255)
+        if (current.percent != 255)
         {
             AddJournal(
                 L"Уровень заряда: " +
@@ -1405,10 +1299,7 @@ void CheckBatteryChanges(
         }
     }
 
-
-    g_lastBattery =
-        current;
-
+    g_lastBattery = current;
 
     InvalidateRect(
         hwnd,
@@ -1417,10 +1308,6 @@ void CheckBatteryChanges(
     );
 }
 
-
-// ============================================================
-// Оконная процедура
-// ============================================================
 
 LRESULT CALLBACK WndProc(
     HWND hwnd,
@@ -1442,16 +1329,11 @@ LRESULT CALLBACK WndProc(
         return 0;
     }
 
-
     case WM_TIMER:
     {
-        CheckBatteryChanges(
-            hwnd
-        );
-
+        CheckBatteryChanges(hwnd);
         return 0;
     }
-
 
     case WM_POWERBROADCAST:
     {
@@ -1466,7 +1348,6 @@ LRESULT CALLBACK WndProc(
             break;
         }
 
-
         case PBT_APMRESUMEAUTOMATIC:
         {
             AddJournal(
@@ -1476,7 +1357,6 @@ LRESULT CALLBACK WndProc(
             break;
         }
 
-
         case PBT_APMRESUMESUSPEND:
         {
             AddJournal(
@@ -1485,7 +1365,6 @@ LRESULT CALLBACK WndProc(
 
             break;
         }
-
 
         case PBT_APMPOWERSTATUSCHANGE:
         {
@@ -1497,23 +1376,17 @@ LRESULT CALLBACK WndProc(
         }
         }
 
-
         InvalidateRect(
             hwnd,
             nullptr,
             FALSE
         );
 
-
         return TRUE;
     }
 
-
     case WM_ERASEBKGND:
-    {
         return 1;
-    }
-
 
     case WM_PAINT:
     {
@@ -1524,46 +1397,27 @@ LRESULT CALLBACK WndProc(
             &ps
         );
 
-
         PaintWindow(hwnd);
-
 
         EndPaint(
             hwnd,
             &ps
         );
 
-
         return 0;
     }
 
-
-    // ПКМ
-
     case WM_RBUTTONUP:
     {
-        int x =
-            GET_X_LPARAM(
-                lParam
-            );
-
-        int y =
-            GET_Y_LPARAM(
-                lParam
-            );
-
-
         POINT point{
-            x,
-            y
+            GET_X_LPARAM(lParam),
+            GET_Y_LPARAM(lParam)
         };
-
 
         ClientToScreen(
             hwnd,
             &point
         );
-
 
         ShowContextMenu(
             hwnd,
@@ -1571,108 +1425,93 @@ LRESULT CALLBACK WndProc(
             point.y
         );
 
+        return 0;
+    }
+
+    // Правый клик по HTCAPTION приходит как WM_NCRBUTTONUP.
+    case WM_NCRBUTTONUP:
+    {
+        ShowContextMenu(
+            hwnd,
+            GET_X_LPARAM(lParam),
+            GET_Y_LPARAM(lParam)
+        );
 
         return 0;
     }
 
-
-    // Перетаскивание
-
-    case WM_NCLBUTTONDOWN:
+    case WM_NCHITTEST:
     {
-        if (wParam ==
-            HTCAPTION)
+        POINT point{
+            GET_X_LPARAM(lParam),
+            GET_Y_LPARAM(lParam)
+        };
+
+        ScreenToClient(
+            hwnd,
+            &point
+        );
+
+        // Фильтры полного журнала остаются кликабельными.
+        if (g_showJournal &&
+            point.y >= 40 &&
+            point.y <= 65)
         {
-            ReleaseCapture();
-
-
-            SendMessageW(
-                hwnd,
-                WM_NCLBUTTONDOWN,
-                HTCAPTION,
-                lParam
-            );
-
-
-            return 0;
+            return HTCLIENT;
         }
 
-        break;
+        // Остальная область окна предназначена для перетаскивания.
+        return HTCAPTION;
     }
-
-
-    // Журнал
 
     case WM_LBUTTONDOWN:
     {
         if (g_showJournal)
         {
-            int y =
-                GET_Y_LPARAM(
-                    lParam
-                );
+            int y = GET_Y_LPARAM(lParam);
 
-
-            if (
-                y >= 40 &&
+            if (y >= 40 &&
                 y <= 65)
             {
-                int x =
-                    GET_X_LPARAM(
-                        lParam
-                    );
-
+                int x = GET_X_LPARAM(lParam);
 
                 if (x < 70)
                 {
-                    g_filter =
-                        FILTER_ALL;
+                    g_filter = FILTER_ALL;
                 }
                 else if (x < 145)
                 {
-                    g_filter =
-                        FILTER_CHARGER;
+                    g_filter = FILTER_CHARGER;
                 }
                 else if (x < 220)
                 {
-                    g_filter =
-                        FILTER_CHARGE;
+                    g_filter = FILTER_CHARGE;
                 }
                 else
                 {
-                    g_filter =
-                        FILTER_SLEEP;
+                    g_filter = FILTER_SLEEP;
                 }
-
 
                 InvalidateRect(
                     hwnd,
                     nullptr,
                     FALSE
                 );
-
 
                 return 0;
             }
         }
 
-
         break;
     }
-
-
-    // Клавиатура
 
     case WM_KEYDOWN:
     {
         if (g_showJournal)
         {
-            if (wParam ==
-                VK_ESCAPE)
+            if (wParam == VK_ESCAPE)
             {
-                g_showJournal =
-                    false;
-
+                g_showJournal = false;
 
                 InvalidateRect(
                     hwnd,
@@ -1680,27 +1519,25 @@ LRESULT CALLBACK WndProc(
                     FALSE
                 );
 
-
                 return 0;
             }
 
-
             if (wParam == '1')
-                g_filter =
-                FILTER_ALL;
-
+            {
+                g_filter = FILTER_ALL;
+            }
             else if (wParam == '2')
-                g_filter =
-                FILTER_CHARGER;
-
+            {
+                g_filter = FILTER_CHARGER;
+            }
             else if (wParam == '3')
-                g_filter =
-                FILTER_CHARGE;
-
+            {
+                g_filter = FILTER_CHARGE;
+            }
             else if (wParam == '4')
-                g_filter =
-                FILTER_SLEEP;
-
+            {
+                g_filter = FILTER_SLEEP;
+            }
 
             InvalidateRect(
                 hwnd,
@@ -1708,14 +1545,11 @@ LRESULT CALLBACK WndProc(
                 FALSE
             );
 
-
             return 0;
         }
 
-
         break;
     }
-
 
     case WM_DESTROY:
     {
@@ -1724,14 +1558,11 @@ LRESULT CALLBACK WndProc(
             1
         );
 
-
         PostQuitMessage(0);
-
 
         return 0;
     }
     }
-
 
     return DefWindowProcW(
         hwnd,
@@ -1742,26 +1573,18 @@ LRESULT CALLBACK WndProc(
 }
 
 
-// ============================================================
-// Точка входа
-// ============================================================
-
 int WINAPI wWinMain(
     HINSTANCE hInstance,
     HINSTANCE,
     PWSTR,
     int)
 {
-    GdiplusStartupInput
-        gdiplusStartupInput;
+    GdiplusStartupInput gdiplusStartupInput;
 
-
-    if (
-        GdiplusStartup(
-            &g_gdiplusToken,
-            &gdiplusStartupInput,
-            nullptr
-        ) != Ok)
+    if (GdiplusStartup(
+        &g_gdiplusToken,
+        &gdiplusStartupInput,
+        nullptr) != Ok)
     {
         MessageBoxW(
             nullptr,
@@ -1774,51 +1597,33 @@ int WINAPI wWinMain(
         return 1;
     }
 
-
     const wchar_t CLASS_NAME[] =
         L"IIUVM_PowerWidget";
 
-
     WNDCLASSW wc{};
 
-    wc.lpfnWndProc =
-        WndProc;
+    wc.lpfnWndProc = WndProc;
+    wc.hInstance = hInstance;
 
-    wc.hInstance =
-        hInstance;
+    wc.hCursor = LoadCursorW(
+        nullptr,
+        IDC_ARROW
+    );
 
-    wc.hCursor =
-        LoadCursorW(
-            nullptr,
-            IDC_ARROW
-        );
-
-    wc.hbrBackground =
-        nullptr;
-
-    wc.lpszClassName =
-        CLASS_NAME;
-
+    wc.hbrBackground = nullptr;
+    wc.lpszClassName = CLASS_NAME;
 
     RegisterClassW(&wc);
 
-
-    // ========================================================
-    // Проверка: приложение уже запущено?
-    // ========================================================
-
-    HANDLE mutex =
-        CreateMutexW(
-            nullptr,
-            TRUE,
-            L"IIUVM_PowerWidget_Mutex"
-        );
-
+    HANDLE mutex = CreateMutexW(
+        nullptr,
+        TRUE,
+        L"IIUVM_PowerWidget_Mutex"
+    );
 
     if (
         mutex != nullptr &&
-        GetLastError() ==
-        ERROR_ALREADY_EXISTS)
+        GetLastError() == ERROR_ALREADY_EXISTS)
     {
         CloseHandle(mutex);
 
@@ -1829,38 +1634,31 @@ int WINAPI wWinMain(
         return 0;
     }
 
-
-    // ========================================================
-    // Окно 300x200
-    // ========================================================
-
-    HWND hwnd =
-        CreateWindowExW(
-            WS_EX_TOOLWINDOW,
-            CLASS_NAME,
-            L"Контроль питания",
-            WS_POPUP,
-            300,
-            200,
-            300,
-            200,
-            nullptr,
-            nullptr,
-            hInstance,
-            nullptr
-        );
-
+    HWND hwnd = CreateWindowExW(
+        WS_EX_TOOLWINDOW,
+        CLASS_NAME,
+        L"Контроль питания",
+        WS_POPUP,
+        300,
+        200,
+        300,
+        200,
+        nullptr,
+        nullptr,
+        hInstance,
+        nullptr
+    );
 
     if (!hwnd)
     {
         if (mutex)
+        {
             CloseHandle(mutex);
-
+        }
 
         GdiplusShutdown(
             g_gdiplusToken
         );
-
 
         MessageBoxW(
             nullptr,
@@ -1870,12 +1668,8 @@ int WINAPI wWinMain(
             MB_ICONERROR
         );
 
-
         return 1;
     }
-
-
-    // Уведомления
 
     GUID settings[] =
     {
@@ -1884,10 +1678,7 @@ int WINAPI wWinMain(
         GUID_POWERSCHEME_PERSONALITY
     };
 
-
-    for (
-        const GUID& guid :
-        settings)
+    for (const GUID& guid : settings)
     {
         RegisterPowerSettingNotification(
             hwnd,
@@ -1896,45 +1687,39 @@ int WINAPI wWinMain(
         );
     }
 
+    LoadJournal();
 
     AddJournal(
         L"Программа запущена"
     );
-
 
     ShowWindow(
         hwnd,
         SW_SHOW
     );
 
-
     UpdateWindow(hwnd);
-
 
     MSG msg{};
 
-
-    while (
-        GetMessageW(
-            &msg,
-            nullptr,
-            0,
-            0))
+    while (GetMessageW(
+        &msg,
+        nullptr,
+        0,
+        0))
     {
         TranslateMessage(&msg);
-
         DispatchMessageW(&msg);
     }
 
-
     if (mutex)
+    {
         CloseHandle(mutex);
-
+    }
 
     GdiplusShutdown(
         g_gdiplusToken
     );
-
 
     return 0;
 }
