@@ -48,4 +48,5 @@ public:
 
 private:
     bool EnableShutdownPrivilege() const;
+    bool RequestSuspendState(bool hibernate) const;
 };

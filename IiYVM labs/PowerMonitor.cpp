@@ -244,9 +244,23 @@ bool PowerMonitor::EnableShutdownPrivilege() const
 }
 
 
-bool PowerMonitor::Sleep() const
+bool PowerMonitor::RequestSuspendState(bool hibernate) const
 {
-    if (!GetPowerCapabilities().sleepSupported)
+    SYSTEM_POWER_CAPABILITIES capabilities{};
+
+    if (!GetPwrCapabilities(&capabilities))
+    {
+        return false;
+    }
+
+    const bool supported = hibernate
+        ? capabilities.SystemS4 != FALSE
+        : capabilities.AoAc != FALSE ||
+        capabilities.SystemS1 != FALSE ||
+        capabilities.SystemS2 != FALSE ||
+        capabilities.SystemS3 != FALSE;
+
+    if (!supported)
     {
         SetLastError(ERROR_NOT_SUPPORTED);
         return false;
@@ -257,36 +271,37 @@ bool PowerMonitor::Sleep() const
         return false;
     }
 
+    // Do not force the transition or disable wake events. Windows can
+    // finish suspend preparation and configured wake devices can resume it.
     SetLastError(ERROR_SUCCESS);
 
-    return SetSuspendState(
+    if (SetSuspendState(
+        hibernate ? TRUE : FALSE,
         FALSE,
-        FALSE,
-        FALSE
-    ) == TRUE;
+        FALSE) == TRUE)
+    {
+        return true;
+    }
+
+    // This BOOL API does not always provide a last-error value on failure.
+    if (GetLastError() == ERROR_SUCCESS)
+    {
+        SetLastError(ERROR_GEN_FAILURE);
+    }
+
+    return false;
+}
+
+
+bool PowerMonitor::Sleep() const
+{
+    return RequestSuspendState(false);
 }
 
 
 bool PowerMonitor::Hibernate() const
 {
-    if (!GetPowerCapabilities().hibernateSupported)
-    {
-        SetLastError(ERROR_NOT_SUPPORTED);
-        return false;
-    }
-
-    if (!EnableShutdownPrivilege())
-    {
-        return false;
-    }
-
-    SetLastError(ERROR_SUCCESS);
-
-    return SetSuspendState(
-        TRUE,
-        FALSE,
-        FALSE
-    ) == TRUE;
+    return RequestSuspendState(true);
 }
 
 
