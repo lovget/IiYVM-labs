@@ -271,8 +271,6 @@ bool PowerMonitor::RequestSuspendState(bool hibernate) const
         return false;
     }
 
-    // Do not force the transition or disable wake events. Windows can
-    // finish suspend preparation and configured wake devices can resume it.
     SetLastError(ERROR_SUCCESS);
 
     if (SetSuspendState(
@@ -283,7 +281,6 @@ bool PowerMonitor::RequestSuspendState(bool hibernate) const
         return true;
     }
 
-    // This BOOL API does not always provide a last-error value on failure.
     if (GetLastError() == ERROR_SUCCESS)
     {
         SetLastError(ERROR_GEN_FAILURE);
@@ -295,6 +292,31 @@ bool PowerMonitor::RequestSuspendState(bool hibernate) const
 
 bool PowerMonitor::Sleep() const
 {
+    SYSTEM_POWER_CAPABILITIES capabilities{};
+
+    if (!GetPwrCapabilities(&capabilities))
+    {
+        return false;
+    }
+
+    if (capabilities.AoAc != FALSE)
+    {
+        // Modern Standby (S0) laptops can fail to resume after an application
+        // directly requests a platform suspend. Use the same safe behaviour
+        // that was previously stable in this widget: turn the display off.
+        // Any keyboard or mouse input turns the display back on immediately.
+        SetLastError(ERROR_SUCCESS);
+
+        SendMessageW(
+            HWND_BROADCAST,
+            WM_SYSCOMMAND,
+            SC_MONITORPOWER,
+            2
+        );
+
+        return true;
+    }
+
     return RequestSuspendState(false);
 }
 
